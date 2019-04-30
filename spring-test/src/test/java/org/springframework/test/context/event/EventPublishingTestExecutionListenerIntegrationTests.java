@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,7 +23,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.Before;
+import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -41,7 +41,6 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestContext;
 import org.springframework.test.context.TestContextManager;
 import org.springframework.test.context.TestExecutionListener;
-import org.springframework.test.context.TestExecutionListeners;
 import org.springframework.test.context.event.annotation.AfterTestClass;
 import org.springframework.test.context.event.annotation.AfterTestExecution;
 import org.springframework.test.context.event.annotation.AfterTestMethod;
@@ -60,9 +59,7 @@ import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.only;
-import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
-import static org.springframework.test.context.TestExecutionListeners.MergeMode.MERGE_WITH_DEFAULTS;
 
 /**
  * Integration tests for {@link EventPublishingTestExecutionListener} and
@@ -80,19 +77,21 @@ public class EventPublishingTestExecutionListenerIntegrationTests {
 
 	private final TestContextManager testContextManager = new TestContextManager(ExampleTestCase.class);
 	private final TestContext testContext = testContextManager.getTestContext();
+	// Note that the following invocation of getApplicationContext() forces eager
+	// loading of the test's ApplicationContext which consequently results in the
+	// publication of all test execution events. Otherwise, TestContext#publishEvent
+	// would never fire any events for ExampleTestCase.
 	private final TestExecutionListener listener = testContext.getApplicationContext().getBean(TestExecutionListener.class);
 	private final Object testInstance = new ExampleTestCase();
-	private final Method testMethod = ReflectionUtils.findMethod(ExampleTestCase.class, "traceableTest");
+	private final Method traceableTestMethod = ReflectionUtils.findMethod(ExampleTestCase.class, "traceableTest");
 
 	@Rule
 	public final ExpectedException exception = ExpectedException.none();
 
 
-	@Before
-	public void resetMock() {
-		// The mocked listener is a bean in the ApplicationContext that is stored
-		// in a static cache by the Spring TestContext Framework.
-		reset(listener);
+	@After
+	public void closeApplicationContext() {
+		this.testContext.markApplicationContextDirty(null);
 	}
 
 	@Test
@@ -109,10 +108,16 @@ public class EventPublishingTestExecutionListenerIntegrationTests {
 
 	@Test
 	public void beforeTestMethodAnnotation() throws Exception {
-		testContextManager.beforeTestMethod(testInstance, testMethod);
+		testContextManager.beforeTestMethod(testInstance, traceableTestMethod);
 		verify(listener, only()).beforeTestMethod(testContext);
 	}
 
+	/**
+	 * The {@code @BeforeTestMethod} condition in
+	 * {@link TestEventListenerConfiguration#beforeTestMethod(BeforeTestMethodEvent)}
+	 * only matches if the test method is annotated with {@code @Traceable}, and
+	 * {@link ExampleTestCase#standardTest()} is not.
+	 */
 	@Test
 	public void beforeTestMethodAnnotationWithFailingCondition() throws Exception {
 		Method standardTest = ReflectionUtils.findMethod(ExampleTestCase.class, "standardTest");
@@ -120,6 +125,10 @@ public class EventPublishingTestExecutionListenerIntegrationTests {
 		verify(listener, never()).beforeTestMethod(testContext);
 	}
 
+	/**
+	 * An exception thrown from an event listener executed in the current thread
+	 * should fail the test method.
+	 */
 	@Test
 	public void beforeTestMethodAnnotationWithFailingEventListener() throws Exception {
 		Method method = ReflectionUtils.findMethod(ExampleTestCase.class, "testWithFailingEventListener");
@@ -135,6 +144,10 @@ public class EventPublishingTestExecutionListenerIntegrationTests {
 		}
 	}
 
+	/**
+	 * An exception thrown from an event listener that is executed asynchronously
+	 * should not fail the test method.
+	 */
 	@Test
 	public void beforeTestMethodAnnotationWithFailingAsyncEventListener() throws Exception {
 		TrackingAsyncUncaughtExceptionHandler.asyncException = null;
@@ -153,19 +166,19 @@ public class EventPublishingTestExecutionListenerIntegrationTests {
 
 	@Test
 	public void beforeTestExecutionAnnotation() throws Exception {
-		testContextManager.beforeTestExecution(testInstance, testMethod);
+		testContextManager.beforeTestExecution(testInstance, traceableTestMethod);
 		verify(listener, only()).beforeTestExecution(testContext);
 	}
 
 	@Test
 	public void afterTestExecutionAnnotation() throws Exception {
-		testContextManager.afterTestExecution(testInstance, testMethod, null);
+		testContextManager.afterTestExecution(testInstance, traceableTestMethod, null);
 		verify(listener, only()).afterTestExecution(testContext);
 	}
 
 	@Test
 	public void afterTestMethodAnnotation() throws Exception {
-		testContextManager.afterTestMethod(testInstance, testMethod, null);
+		testContextManager.afterTestMethod(testInstance, traceableTestMethod, null);
 		verify(listener, only()).afterTestMethod(testContext);
 	}
 
@@ -183,7 +196,6 @@ public class EventPublishingTestExecutionListenerIntegrationTests {
 
 	@RunWith(SpringRunner.class)
 	@ContextConfiguration(classes = TestEventListenerConfiguration.class)
-	@TestExecutionListeners(listeners = EventPublishingTestExecutionListener.class, mergeMode = MERGE_WITH_DEFAULTS)
 	public static class ExampleTestCase {
 
 		@Traceable
@@ -262,12 +274,12 @@ public class EventPublishingTestExecutionListenerIntegrationTests {
 			throw new RuntimeException("Boom!");
 		}
 
-		@BeforeTestExecution
+		@BeforeTestExecution("'yes'")
 		public void beforeTestExecution(BeforeTestExecutionEvent e) throws Exception {
 			listener().beforeTestExecution(e.getSource());
 		}
 
-		@AfterTestExecution
+		@AfterTestExecution("'1'")
 		public void afterTestExecution(AfterTestExecutionEvent e) throws Exception {
 			listener().afterTestExecution(e.getSource());
 		}
